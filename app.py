@@ -1,3 +1,4 @@
+
 from flask import Flask, render_template, request
 import joblib
 import sqlite3
@@ -5,6 +6,7 @@ import os
 
 from s3_upload import upload_resume
 from sqs_service import send_prediction
+from lambda_service import invoke_lambda
 
 app = Flask(__name__)
 
@@ -22,27 +24,17 @@ def create_database():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS students(
-
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-
             name TEXT,
-
             email TEXT,
-
             cgpa REAL,
-
             dsa INTEGER,
-
             projects INTEGER,
-
             internship INTEGER,
-
             communication INTEGER,
-
             resume_url TEXT,
-
-            prediction TEXT
-
+            prediction TEXT,
+            confidence REAL
         )
     """)
 
@@ -73,7 +65,7 @@ def predict():
 
     resume_url = ""
 
-    if resume and resume.filename != "":
+    if resume and resume.filename:
 
         filename = resume.filename
 
@@ -89,44 +81,32 @@ def predict():
             filename
         )
 
-    prediction = model.predict([
-        [
-            cgpa,
-            dsa,
-            projects,
-            internship,
-            communication
-        ]
-    ])
+    features = [[
+        cgpa,
+        dsa,
+        projects,
+        internship,
+        communication
+    ]]
 
-    probability = model.predict_proba([
-        [
-            cgpa,
-            dsa,
-            projects,
-            internship,
-            communication
-        ]
-    ])
+    prediction = model.predict(features)
 
-    probability = round(max(probability[0]) * 100, 2)
+    confidence = round(
+        max(model.predict_proba(features)[0]) * 100,
+        2
+    )
 
     if prediction[0] == 1:
-
         result = "High Chance of Placement"
-
     else:
-
         result = "Low Chance of Placement"
 
     conn = sqlite3.connect("database.db")
-
     cursor = conn.cursor()
 
-    cursor.execute("""
-
+    cursor.execute(
+        """
         INSERT INTO students(
-
             name,
             email,
             cgpa,
@@ -135,64 +115,61 @@ def predict():
             internship,
             communication,
             resume_url,
-            prediction
-
+            prediction,
+            confidence
         )
-
-        VALUES(?,?,?,?,?,?,?,?,?)
-
-    """,
-
-    (
-
-        name,
-        email,
-        cgpa,
-        dsa,
-        projects,
-        internship,
-        communication,
-        resume_url,
-        result
-
-    )
-
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            name,
+            email,
+            cgpa,
+            dsa,
+            projects,
+            internship,
+            communication,
+            resume_url,
+            result,
+            confidence
+        )
     )
 
     conn.commit()
-
     conn.close()
 
     send_prediction(
-
         name,
         email,
         result
-
     )
 
+    try:
+        invoke_lambda(
+            name=name,
+            email=email,
+            cgpa=cgpa,
+            dsa=dsa,
+            projects=projects,
+            communication=communication,
+            prediction=result,
+            confidence=confidence
+        )
+        print("Lambda invoked successfully")
+    except Exception as e:
+        print(f"Lambda Error: {e}")
+
     return render_template(
-
         "result.html",
-
         name=name,
-
         email=email,
-
         cgpa=cgpa,
-
         dsa=dsa,
-
         projects=projects,
-
         communication=communication,
-
         result=result,
-
-        probability=probability,
-
+        probability=confidence,
+        confidence=confidence,
         resume_url=resume_url
-
     )
 
 
